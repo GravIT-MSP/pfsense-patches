@@ -1,0 +1,104 @@
+--- /usr/local/pkg/tailscale/tailscale_common.inc
++++ /usr/local/pkg/tailscale/tailscale_common.inc
+@@ -497,8 +497,60 @@
+ 	# looks good, changes needed so write them out
+ 	$cmd = implode(' ', [SYSRC_BIN, '-f', $output_file, $var_string]);
+ 	return (mwexec($cmd) === 0);
++}
++
++/*
++ * Apply GUI settings using "tailscale set" (incremental) rather than "tailscale up" (declarative).
++ * This avoids breakage when non-default prefs exist (e.g. SSH enabled via "tailscale set --ssh").
++ *
++ * Source of truth is /usr/local/etc/rc.conf.d/pfsense_tailscaled, which the GUI already writes.
++ */
++function tailscale_apply_set_from_rcconf(): bool
++{
++	$sh = <<<'SH'
++. /usr/local/etc/rc.conf.d/pfsense_tailscaled 2>/dev/null || exit 0
++TS="/usr/local/bin/tailscale"
++
++accdns="${pfsense_tailscaled_acceptdns_enable:-YES}"
++accroutes="${pfsense_tailscaled_acceptroutes_enable:-NO}"
++exitnode="${pfsense_tailscaled_exitnode_enable:-NO}"
++routes="${pfsense_tailscaled_advertiseroutes:-}"
++
++cmd="$TS set"
++
++if [ "$accdns" = "YES" ]; then
++  cmd="$cmd --accept-dns=true"
++else
++  cmd="$cmd --accept-dns=false"
++fi
++
++if [ "$accroutes" = "YES" ]; then
++  cmd="$cmd --accept-routes=true"
++else
++  cmd="$cmd --accept-routes=false"
++fi
++
++if [ "$exitnode" = "YES" ]; then
++  cmd="$cmd --advertise-exit-node=true"
++else
++  cmd="$cmd --advertise-exit-node=false"
++fi
++
++# IMPORTANT: empty clears advertised routes
++if [ -n "$routes" ]; then
++  cmd="$cmd --advertise-routes=$routes"
++else
++  cmd="$cmd --advertise-routes="
++fi
++
++eval "$cmd"
++SH;
++
++	// run synchronously so the GUI can reflect success/failure
++	return (mwexec("/bin/sh -c " . escapeshellarg($sh), false, false, false) === 0);
+ }
+ 
++
+ /*
+  * Utility function that takes a $key and $value and returns
+  * an sh-style variable assignment like $key="$value"
+--- /usr/local/pkg/tailscale/tailscale.inc
++++ /usr/local/pkg/tailscale/tailscale.inc
+@@ -87,18 +87,29 @@
+ 	if (!$tailscale_is_installing)
+ 		tailscale_service_checkpoint();
+ 
+-	$need_restart = false;
++	/*
++	 * Split daemon-level settings from runtime prefs:
++	 * - Daemon-level rcconf changes (tailscaled_*) require a service restart to take effect.
++	 * - Runtime prefs (pfsense_tailscaled_*) should be applied live with "tailscale set".
++	 */
++	$daemon_changed = tailscale_map_and_write_rcconf(tailscale_tailscaled_rcconf_map(), TAILSCALED_RCCONF);
++	$prefs_changed  = tailscale_map_and_write_rcconf(tailscale_pfsense_tailscaled_rcconf_map(), PFSENSE_TAILSCALED_RCCONF);
+ 
+-	if (tailscale_map_and_write_rcconf(tailscale_tailscaled_rcconf_map(), TAILSCALED_RCCONF))
+-		$need_restart = true;
++	if (!$tailscale_is_installing && ($daemon_changed || $prefs_changed)) {
++		/* Apply daemon-level changes first */
++		if ($daemon_changed) {
++			tailscale_run_rc_command(PFSENSE_TAILSCALED_RC, 'restart');
++		} elseif (tailscale_is_not_running()) {
++			/* No daemon change, but we still need tailscaled up for tailscale set */
++			tailscale_run_rc_command(PFSENSE_TAILSCALED_RC, 'start', false);
++		}
+ 
+-	if (tailscale_map_and_write_rcconf(tailscale_pfsense_tailscaled_rcconf_map(), PFSENSE_TAILSCALED_RCCONF))
+-		$need_restart = true;
++		/* Apply runtime prefs incrementally without restarting */
++		if ($prefs_changed && !tailscale_apply_set_from_rcconf()) {
++			log_error(gettext('Tailscale: unable to apply settings via tailscale set; check logs.'));
++		}
++	}
+ 
+-	# we perform this in the background, it can otherwise block for a while
+-	if ($need_restart && !$tailscale_is_installing)
+-		tailscale_run_rc_command(PFSENSE_TAILSCALED_RC, 'restart');
+-
+ 	# definitely not installing at this point
+ 	$tailscale_is_installing = false;
+ }
