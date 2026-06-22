@@ -1,0 +1,38 @@
+--- /usr/local/sbin/pfSense-dhclient-script
++++ /usr/local/sbin/pfSense-dhclient-script
+@@ -175,10 +175,14 @@
+ 		fill_classless_routes "$old_classless_routes"
+ 		set $classless_routes
+ 		while [ $# -gt 1 ]; do
+-			$ROUTE delete "$1" "$2"
++			if [ "default" = "$1" ]; then
++				old_routers="$2"
++			else
++				$ROUTE delete "$1" "$2"
++			fi
+ 			shift; shift
+ 		done
+-		return 0;
++		old_static_routes=""
+ 	fi
+ 
+ 	# Only allow the default route to be overridden if it's on our own interface
+@@ -225,14 +229,16 @@
+ 		_logger "LOG_NOTICE" "New Classless Static Routes (${interface}): ${classless_routes}"
+ 		set $classless_routes
+ 		while [ $# -gt 1 ]; do
+-			if [ "0.0.0.0" = "$2" ]; then
++			if [ "default" = "$1" ]; then
++				new_routers="$2"
++			elif [ "0.0.0.0" = "$2" ]; then
+ 				$ROUTE add "$1" -iface "$interface"
+ 			else
+ 				$ROUTE add "$1" "$2"
+ 			fi
+ 			shift; shift
+ 		done
+-		return
++		new_static_routes=""
+ 	fi
+ 
+ 	ADDED_ROUTE=no
