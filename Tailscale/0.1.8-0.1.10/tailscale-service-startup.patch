@@ -1,0 +1,22 @@
+--- /usr/local/etc/rc.d/pfsense_tailscaled
++++ /usr/local/etc/rc.d/pfsense_tailscaled
+@@ -112,9 +112,17 @@
+ 	# add the tun device to the interface group
+ 	tun_dev_add_group
+ 
+-	# bring up Tailscale
+-	tailscale_up
++		# Only run "tailscale up" on first enrollment (no persistent state).
++	# When state exists, tailscaled will reconnect and restore prefs automatically.
++	if [ -n "${tailscaled_state_dir}" ] && [ -s "${tailscaled_state_dir}/${tailscaled_state_file}" ]; then
++		:
++	elif [ -s "${tailscaled_vendor_state_dir}/${tailscaled_state_file}" ]; then
++		:
++	else
++		tailscale_up
++	fi
+ 
++
+ 	# reload the packet filter
+ 	pfsense_reload_filter
+ }
